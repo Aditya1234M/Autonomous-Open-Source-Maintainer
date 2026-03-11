@@ -1,0 +1,143 @@
+# 🤖 Autonomous Open Source Maintainer
+
+An AI-powered agent that automatically reviews Pull Requests on GitHub. It uses **Amazon Nova Act** to browse PRs and **Amazon Nova 2 Pro** (1M token context) to understand entire codebases — then clones the repo, runs tests, and posts actionable reviews directly on the PR.
+
+## The Problem
+
+Open-source maintainers are drowning. Popular projects get hundreds of PRs and issues. Most are low-quality, out-of-date, or missing tests. Human maintainers burn out trying to keep up.
+
+## How It Works
+
+```
+  GitHub PR Event
+        │
+        ▼
+  ┌─────────────┐
+  │  Webhook     │  ← FastAPI server receives PR events
+  │  Server      │
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Nova Act    │  ← Browses the PR, extracts diffs & metadata
+  │  PR Browser  │
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Test Runner │  ← Clones repo, auto-detects framework, runs tests
+  │  (Sandbox)   │
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  Nova 2 Pro  │  ← Reads FULL codebase (1M tokens) + diff
+  │  Analyzer    │     Finds bugs, breaking changes, missing tests
+  └──────┬──────┘
+         │
+         ▼
+  ┌─────────────┐
+  │  GitHub      │  ← Posts review with inline comments & fix suggestions
+  │  Reviewer    │
+  └─────────────┘
+```
+
+## Project Structure
+
+```
+src/
+├── __init__.py          # Package init
+├── config.py            # Environment-based configuration
+├── server.py            # FastAPI webhook endpoint
+├── pipeline.py          # Orchestrates the full review flow
+├── pr_browser.py        # Nova Act — browses and extracts PR details
+├── analyzer.py          # Nova 2 Pro — deep codebase analysis
+├── test_runner.py       # Clones repos, detects frameworks, runs tests
+└── reviewer.py          # Posts structured reviews back to GitHub
+```
+
+## Setup
+
+### 1. Prerequisites
+
+- Python 3.10+
+- An AWS account with Bedrock access (for Nova 2 Pro)
+- A Nova Act API key
+- A GitHub Personal Access Token with `repo` scope
+
+### 2. Install
+
+```bash
+# Clone this repo
+git clone https://github.com/your-org/autonomous-maintainer.git
+cd autonomous-maintainer
+
+# Create a virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -e ".[dev]"
+```
+
+### 3. Configure
+
+```bash
+cp .env.example .env
+# Edit .env with your actual keys
+```
+
+| Variable | Description |
+|---|---|
+| `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
+| `GITHUB_WEBHOOK_SECRET` | Secret for verifying webhook payloads |
+| `AWS_ACCESS_KEY_ID` | AWS credentials for Bedrock |
+| `AWS_SECRET_ACCESS_KEY` | AWS credentials for Bedrock |
+| `AWS_REGION` | AWS region (default: `us-east-1`) |
+| `NOVA_ACT_API_KEY` | API key for Nova Act |
+
+### 4. Run
+
+```bash
+# Start the webhook server
+uvicorn src.server:app --host 0.0.0.0 --port 8000
+
+# For development with auto-reload
+uvicorn src.server:app --reload --port 8000
+```
+
+### 5. Set Up GitHub Webhook
+
+1. Go to your repo → **Settings** → **Webhooks** → **Add webhook**
+2. **Payload URL:** `https://your-server.com/webhook`
+3. **Content type:** `application/json`
+4. **Secret:** Same value as `GITHUB_WEBHOOK_SECRET` in `.env`
+5. **Events:** Select "Pull requests"
+
+> **Tip:** For local development, use [ngrok](https://ngrok.com/) or [smee.io](https://smee.io/) to expose your local server.
+
+## Supported Languages
+
+The test runner auto-detects and runs tests for:
+
+| Language | Detection | Command |
+|---|---|---|
+| Python | `pyproject.toml` / `setup.py` | `pytest` |
+| Node.js | `package.json` | `npm test` |
+| Go | `go.mod` | `go test ./...` |
+| Rust | `Cargo.toml` | `cargo test` |
+| Java (Maven) | `pom.xml` | `mvn test` |
+| Java (Gradle) | `build.gradle` | `./gradlew test` |
+| Makefile | `Makefile` | `make test` |
+
+## What the Review Includes
+
+- **Risk Assessment** — Low / Medium / High / Critical
+- **Test Results** — Actually runs the test suite and reports pass/fail
+- **Bug Detection** — Logic errors, breaking changes, security issues
+- **Inline Comments** — Specific file + line references with fix suggestions
+- **Missing Tests** — What test cases should be added
+
+## License
+
+MIT
