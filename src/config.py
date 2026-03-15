@@ -12,9 +12,8 @@ class Settings(BaseSettings):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_region: str = "us-east-1"
-
-    # Nova Act
-    nova_act_api_key: str
+    bedrock_model_id: str = "amazon.nova-premier-v1:0"
+    bedrock_inference_profile_id: str | None = None
 
     # App
     workdir: str = "/tmp/maintainer-workspaces"

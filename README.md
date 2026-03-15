@@ -1,6 +1,6 @@
 # 🤖 Autonomous Open Source Maintainer
 
-An AI-powered agent that automatically reviews Pull Requests on GitHub. It uses **Amazon Nova Act** to browse PRs and **Amazon Nova 2 Pro** (1M token context) to understand entire codebases — then clones the repo, runs tests, and posts actionable reviews directly on the PR.
+An AI-powered agent that automatically reviews Pull Requests on GitHub. It uses **Amazon Nova Act** when configured, falls back to the **GitHub API** for PR metadata when Nova Act auth is unavailable, and uses **Amazon Nova via Bedrock** to analyze the codebase before posting actionable feedback on the PR.
 
 ## The Problem
 
@@ -61,16 +61,16 @@ src/
 ### 1. Prerequisites
 
 - Python 3.10+
-- An AWS account with Bedrock access (for Nova 2 Pro)
-- A Nova Act API key
-- A GitHub Personal Access Token with `repo` scope
+- An AWS account with Bedrock access
+- A GitHub Personal Access Token with repository write access
+- Optional: Nova Act API key or Nova Act workflow-based AWS setup
 
 ### 2. Install
 
 ```bash
 # Clone this repo
-git clone https://github.com/your-org/autonomous-maintainer.git
-cd autonomous-maintainer
+git clone https://github.com/Aditya1234M/Autonomous-Open-Source-Maintainer.git
+cd Autonomous-Open-Source-Maintainer
 
 # Create a virtual environment
 python -m venv .venv
@@ -89,14 +89,23 @@ cp .env.example .env
 
 | Variable | Description |
 |---|---|
-| `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
+| `GITHUB_TOKEN` | GitHub PAT with `repo` scope or fine-grained `issues:write` + `pull_requests:write` |
 | `GITHUB_WEBHOOK_SECRET` | Secret for verifying webhook payloads |
 | `AWS_ACCESS_KEY_ID` | AWS credentials for Bedrock |
 | `AWS_SECRET_ACCESS_KEY` | AWS credentials for Bedrock |
 | `AWS_REGION` | AWS region (default: `us-east-1`) |
-| `NOVA_ACT_API_KEY` | API key for Nova Act |
+| `BEDROCK_MODEL_ID` | Optional model override. Defaults to `amazon.nova-premier-v1:0` |
+| `BEDROCK_INFERENCE_PROFILE_ID` | Optional Bedrock inference profile ID or ARN for Nova Premier |
 
-### 4. Run
+`.env` is intentionally excluded from git via `.gitignore`. Keep real credentials only in your local `.env` file and never commit them.
+
+### 4. Authentication Notes
+
+- **GitHub posting permissions:** the bot needs `issues:write` and `pull_requests:write` to post results back to a PR.
+- **Nova Act:** if Nova Act authentication is not configured, the bot automatically falls back to GitHub API metadata collection.
+- **Bedrock:** if Nova Premier cannot be invoked without an inference profile, the analyzer falls back to `amazon.nova-pro-v1:0`.
+
+### 5. Run
 
 ```bash
 # Start the webhook server
@@ -106,7 +115,7 @@ uvicorn src.server:app --host 0.0.0.0 --port 8000
 uvicorn src.server:app --reload --port 8000
 ```
 
-### 5. Set Up GitHub Webhook
+### 6. Set Up GitHub Webhook
 
 1. Go to your repo → **Settings** → **Webhooks** → **Add webhook**
 2. **Payload URL:** `https://your-server.com/webhook`
@@ -115,6 +124,15 @@ uvicorn src.server:app --reload --port 8000
 5. **Events:** Select "Pull requests"
 
 > **Tip:** For local development, use [ngrok](https://ngrok.com/) or [smee.io](https://smee.io/) to expose your local server.
+
+### 7. Trigger A Review
+
+1. Open a pull request in the target repository.
+2. Push another commit to that PR branch, or edit a file from the GitHub UI.
+3. GitHub sends a `pull_request` webhook (`opened`, `synchronize`, or `reopened`).
+4. The bot clones the repo, inspects the PR, analyzes the codebase, and posts a review or PR comment.
+
+If you are testing on your own PR, GitHub may reject `REQUEST_CHANGES` as a review event. In that case this project automatically posts a normal PR comment instead.
 
 ## Supported Languages
 

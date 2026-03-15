@@ -4,12 +4,42 @@ import asyncio
 import logging
 import os
 import shutil
+import stat
+import time
 
 import git
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _remove_readonly(func, path, _exc_info):
+    """Best-effort handler for read-only files on Windows during rmtree."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _prepare_workspace(workspace: str) -> str:
+    """Create a clean workspace path, tolerating Windows file-lock races."""
+    if not os.path.exists(workspace):
+        os.makedirs(workspace, exist_ok=True)
+        return workspace
+
+    for _ in range(3):
+        try:
+            shutil.rmtree(workspace, onerror=_remove_readonly)
+            break
+        except PermissionError:
+            time.sleep(0.5)
+    else:
+        # Fall back to a fresh path if old workspace is still locked by another process.
+        workspace = f"{workspace}-{int(time.time())}"
+        logger.warning("Workspace cleanup locked; using fallback path: %s", workspace)
+
+    if not os.path.exists(workspace):
+        os.makedirs(workspace, exist_ok=True)
+    return workspace
 
 
 def _clone_repo(clone_url: str, head_branch: str, workspace: str) -> str:
@@ -104,10 +134,8 @@ async def clone_and_run_tests(pr_info: dict) -> dict:
         f"pr-{pr_info['pr_number']}",
     )
 
-    # Clean up any previous run
-    if os.path.exists(workspace):
-        shutil.rmtree(workspace)
-    os.makedirs(workspace, exist_ok=True)
+    # Clean up any previous run with Windows-safe retries.
+    workspace = _prepare_workspace(workspace)
 
     repo_path = _clone_repo(pr_info["clone_url"], pr_info["head_branch"], workspace)
 

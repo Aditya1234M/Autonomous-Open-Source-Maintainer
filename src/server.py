@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import logging
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from src.config import settings
 from src.pipeline import review_pull_request
@@ -15,26 +15,70 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Autonomous Open Source Maintainer")
 
 
+async def _run_review_pipeline(pr_info: dict[str, str | int]) -> None:
+    """Run PR review pipeline and keep webhook endpoint stable on failures."""
+    try:
+        await review_pull_request(pr_info)
+        logger.info("Completed review pipeline for PR #%s", pr_info["pr_number"])
+    except Exception:
+        logger.exception("Review pipeline failed for PR #%s", pr_info["pr_number"])
+
+
 def _verify_signature(payload: bytes, signature: str) -> bool:
     """Verify the GitHub webhook HMAC-SHA256 signature."""
+    if not signature:
+        return False
+
+    provided = signature.strip()
+    if "=" not in provided:
+        logger.warning("Webhook signature missing algorithm prefix")
+        return False
+
+    algo, provided_digest = provided.split("=", 1)
+    algo = algo.lower()
+    if algo not in {"sha256", "sha1"}:
+        logger.warning("Unsupported webhook signature algorithm: %s", algo)
+        return False
+
+    hash_fn = hashlib.sha256 if algo == "sha256" else hashlib.sha1
     expected = hmac.new(
-        settings.github_webhook_secret.encode(),
+        settings.github_webhook_secret.strip().encode(),
         payload,
-        hashlib.sha256,
+        hash_fn,
     ).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
+
+    # Compare digest values only, normalized to lowercase for robustness.
+    matched = hmac.compare_digest(expected, provided_digest.lower())
+    if not matched:
+        logger.warning(
+            (
+                "Webhook signature mismatch "
+                "(algo=%s, payload_len=%s, secret_len=%s, "
+                "expected_prefix=%s, provided_prefix=%s)"
+            ),
+            algo,
+            len(payload),
+            len(settings.github_webhook_secret.strip()),
+            expected[:12],
+            provided_digest.lower()[:12],
+        )
+
+    return matched
 
 
 @app.post("/webhook")
 async def github_webhook(
     request: Request,
-    x_hub_signature_256: str = Header(...),
+    background_tasks: BackgroundTasks,
+    x_hub_signature_256: str | None = Header(default=None),
+    x_hub_signature: str | None = Header(default=None),
     x_github_event: str = Header(...),
 ):
     """Handle incoming GitHub webhook events."""
     payload = await request.body()
+    signature = x_hub_signature_256 or x_hub_signature
 
-    if not _verify_signature(payload, x_hub_signature_256):
+    if not _verify_signature(payload, signature or ""):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     if x_github_event != "pull_request":
@@ -58,10 +102,10 @@ async def github_webhook(
 
     logger.info("Received PR #%s on %s", pr_info["pr_number"], pr_info["repo_full_name"])
 
-    # Run the full review pipeline (non-blocking in production; inline here for clarity)
-    await review_pull_request(pr_info)
+    # Queue long-running work so GitHub receives a fast successful webhook response.
+    background_tasks.add_task(_run_review_pipeline, pr_info)
 
-    return {"status": "processing", "pr": pr_info["pr_number"]}
+    return {"status": "accepted", "pr": pr_info["pr_number"], "action": action}
 
 
 @app.get("/health")

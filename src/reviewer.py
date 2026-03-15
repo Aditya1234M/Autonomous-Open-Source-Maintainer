@@ -3,6 +3,7 @@
 import logging
 
 from github import Github
+from github.GithubException import GithubException
 
 from src.config import settings
 
@@ -83,6 +84,17 @@ async def post_review(pr_info: dict, analysis: dict, test_results: dict) -> None
     }
     event = event_map.get(approval, "COMMENT")
 
+    # GitHub does not allow requesting changes on your own PR.
+    viewer_login = g.get_user().login
+    pr_author_login = pr.user.login if pr.user else ""
+    if viewer_login == pr_author_login and event in {"REQUEST_CHANGES", "APPROVE"}:
+        logger.info(
+            "Reviewer is PR author (%s); using COMMENT instead of %s",
+            viewer_login,
+            event,
+        )
+        event = "COMMENT"
+
     # Build inline comments for specific issues
     inline_comments = []
     commit = repo.get_commit(pr_info["head_sha"])
@@ -101,22 +113,57 @@ async def post_review(pr_info: dict, analysis: dict, test_results: dict) -> None
                 ),
             })
 
-    # Post the review
-    if inline_comments:
-        pr.create_review(
-            commit=commit,
-            body=body,
-            event=event,
-            comments=inline_comments,
-        )
-    else:
-        pr.create_review(
-            commit=commit,
-            body=body,
-            event=event,
-        )
+    # Post the review. If token cannot create reviews (403), fallback to PR comment.
+    try:
+        if inline_comments:
+            pr.create_review(
+                commit=commit,
+                body=body,
+                event=event,
+                comments=inline_comments,
+            )
+        else:
+            pr.create_review(
+                commit=commit,
+                body=body,
+                event=event,
+            )
 
-    logger.info(
-        "Posted %s review on %s PR #%d with %d inline comments",
-        event, pr_info["repo_full_name"], pr_info["pr_number"], len(inline_comments),
-    )
+        logger.info(
+            "Posted %s review on %s PR #%d with %d inline comments",
+            event, pr_info["repo_full_name"], pr_info["pr_number"], len(inline_comments),
+        )
+    except GithubException as exc:
+        unprocessable_review = exc.status == 422 and "unprocessable" in str(exc).lower()
+        if unprocessable_review:
+            logger.warning(
+                "Review payload rejected by GitHub (422). Falling back to issue comment."
+            )
+            fallback_note = (
+                "\n\n_Note: structured review was rejected by GitHub, "
+                "so this was posted as a PR comment._"
+            )
+            pr.create_issue_comment(
+                body + fallback_note
+            )
+            return
+
+        forbidden_review = exc.status == 403 and "personal access token" in str(exc).lower()
+        if not forbidden_review:
+            raise
+
+        logger.warning(
+            "Token cannot create pull request reviews (403). Falling back to issue comment."
+        )
+        fallback_note = (
+            "\n\n_Note: review API permission missing for current token; "
+            "posted as PR comment instead._"
+        )
+        pr.create_issue_comment(
+            body + fallback_note
+        )
+        logger.info(
+            "Posted fallback PR comment on %s PR #%d",
+            pr_info["repo_full_name"],
+            pr_info["pr_number"],
+        )

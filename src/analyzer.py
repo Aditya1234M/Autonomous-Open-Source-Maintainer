@@ -5,13 +5,14 @@ import logging
 import os
 
 import boto3
+from botocore.exceptions import ClientError
 
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Nova 2 Pro model ID on Amazon Bedrock
-MODEL_ID = "amazon.nova-premier-v1:0"
+PREMIER_MODEL_ID = "amazon.nova-premier-v1:0"
+PRO_MODEL_ID = "amazon.nova-pro-v1:0"
 
 
 def _collect_repo_files(repo_path: str) -> list[dict]:
@@ -101,20 +102,47 @@ async def analyze_codebase_with_pr(repo_path: str, diff_summary: str) -> dict:
         aws_secret_access_key=settings.aws_secret_access_key,
     )
 
-    logger.info("Sending analysis request to Nova 2 Pro (%s)…", MODEL_ID)
+    model_id = settings.bedrock_inference_profile_id or settings.bedrock_model_id
+    logger.info("Sending analysis request to Bedrock model/profile (%s)…", model_id)
 
-    response = bedrock.converse(
-        modelId=MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        inferenceConfig={"maxTokens": 8192, "temperature": 0.1},
-    )
+    try:
+        response = bedrock.converse(
+            modelId=model_id,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 8192, "temperature": 0.1},
+        )
+    except ClientError as exc:
+        msg = str(exc)
+        on_demand_error = (
+            "on-demand throughput isn't supported" in msg
+            or "on-demand throughput isn’t supported" in msg
+        )
+        should_fallback = (
+            on_demand_error
+            and settings.bedrock_inference_profile_id is None
+            and model_id == PREMIER_MODEL_ID
+        )
+
+        if should_fallback:
+            logger.warning(
+                "Premier model requires an inference profile. "
+                "Falling back to %s for this run.",
+                PRO_MODEL_ID,
+            )
+            response = bedrock.converse(
+                modelId=PRO_MODEL_ID,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={"maxTokens": 8192, "temperature": 0.1},
+            )
+        else:
+            raise
 
     raw_text = response["output"]["message"]["content"][0]["text"]
 
     try:
         analysis = json.loads(raw_text)
     except json.JSONDecodeError:
-        logger.warning("Nova 2 Pro returned non-JSON; wrapping as raw analysis")
+        logger.warning("Bedrock model returned non-JSON; wrapping as raw analysis")
         analysis = {
             "summary": raw_text[:500],
             "risk_level": "unknown",
